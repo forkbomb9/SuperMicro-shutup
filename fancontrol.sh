@@ -22,18 +22,14 @@
 #- add alternative failsafe - 100% instead of auto
 
 
-#the IP address of iDrac
-IPMIHOST=192.168.0.42
+#the IP address of the IPMI host
+IPMIHOST=10.0.0.10
 
 #iDrac user
-IPMIUSER=root
+IPMIUSER=ADMIN
 
-#iDrac password (calvin is the default password)
-IPMIPW=calvin
-
-#YOUR IPMI ENCRYPTION KEY - a big string of zeros is the default, and by default isn't mandatory to be specified.
-#You can modify it, for example in idrac7's webinterface under iDRAC Settings>Network , in the IPMI Settings section.
-IPMIEK=0000000000000000000000000000000000000000
+#IPMI password (ADMIN is the default password)
+IPMIPW=ADMIN
 
 #Side note: you shouldn't ever store credentials in a script. Period. Here it's an example. 
 #I suggest you give a look at tools like https://github.com/plyint/encpass.sh 
@@ -43,15 +39,15 @@ IPMIEK=0000000000000000000000000000000000000000
 E_value="auto"
 
 #IPMI IDs
-#/!\ IMPORTANT - the "0Eh"(CPU0),"0Fh"(CPU1), "04h"(inlet) and "01h"(exhaust) values are the proper ones for MY R720, maybe not for your server. 
+#/!\ IMPORTANT - the "01h"(CPU0),"02h"(CPU1), "04h"(inlet) and "01h"(exhaust) values are the proper ones for MY 6018U-TR4T+, maybe not for your server. 
 #To check your values, use the "temppull.sh" script.
-CPUID0=0Eh
-CPUID1=0Fh
+CPUID0=01h
+CPUID1=02h
 CPUID2="0#h"
 CPUID3="0#h"
-#Yes, there are 4 CPU servers in the poweredge line. I don't have one, so I left 0#h values for these. As said above, modify accordingly.
-AMBIENT_ID=04h
-EXHAUST_ID=01h
+#Yes, there are 4 CPU servers. I don't have one, so I left 0#h values for these. As said above, modify accordingly.
+AMBIENT_ID=0Bh
+EXHAUST_ID=0Ch
 #-------------------------------------------------
 #For G11 servers and some other unlucky ones:
 #I was made aware that people on iDrac6, notably the R610, reported only having access to ambient temperature, and not CPU temps neither exhaust temps.
@@ -91,13 +87,13 @@ TEMP_STEP0=30
 FST0=2
 TEMP_STEP1=35
 FST1=6
-TEMP_STEP2=40
+TEMP_STEP2=55
 FST2=8
-TEMP_STEP3=50
+TEMP_STEP3=65
 FST3=10
-TEMP_STEP4=60
-FST4=12
-TEMP_STEP5=75
+TEMP_STEP4=75
+FST4=14
+TEMP_STEP5=85
 FST5=20
 #CPU fan governor type - keep in mind, with IPMI it's CPUs, not cores.
 #0 = uses average CPU temperature accross CPUs
@@ -128,7 +124,7 @@ AMBTEMP_STEP3=26
 AMBTEMP_MOD_STEP3=20
 AMBTEMP_noCPU_FS_STEP3=30
 
-MAX_MOD=69
+MAX_MOD=10
 
 #If your exhaust temp is reaching 65°C, you've been cooking your server. It needs the woosh.
 EXHTEMP_MAX=65
@@ -155,14 +151,14 @@ Logloop=false
 l="Loop -"
 
 #IPMI Commands to set fan speeds.
-# "ipmitool -I lanplus -H $IPMIHOST -U $IPMIUSER -P $IPMIPW -y $IPMIEK raw 0x30 0x30 0x01 0x01" gives back to the server the right to automate fan speed
-# "ipmitool -I lanplus -H $IPMIHOST -U $IPMIUSER -P $IPMIPW -y $IPMIEK raw 0x30 0x30 0x01 0x00" stops the server from adjusting fanspeed by itself, no matter the temp
-# "ipmitool -I lanplus -H $IPMIHOST -U $IPMIUSER -P $IPMIPW -y $IPMIEK raw 0x30 0x30 0x02 0xff 0x"hex value 00-64" lets you define fan speed
+# "ipmitool raw 0x30 0x45 0x01 0x02" sets the fan mode to Optimal
+# "ipmitool raw 0x30 0x45 0x01 0x01" sets the fan mode to Full
+# "ipmitool raw 0x30 0x70 0x66 0x01 0x"hex value 00-01" 0x"hex value 00-64" lets you define fan speed
 
 #Extra Curves and data sources
 
 #Hexadecimal conversion and IPMI command into a function 
-ipmifanctl=(ipmitool -I lanplus -H "$IPMIHOST" -U "$IPMIUSER" -P "$IPMIPW" -y "$IPMIEK" raw 0x30 0x30)
+ipmifanctl=(ipmitool -I lanplus -H "$IPMIHOST" -U "$IPMIUSER" -P "$IPMIPW" raw)
 function setfanspeed () { 
     TEMP_Check=$1
     TEMP_STEP=$2
@@ -172,7 +168,7 @@ function setfanspeed () {
                 echo "> $TEMP_Check °C is higher or equal to $TEMP_STEP °C. Switching to automatic fan control"
         fi
         [ "$4" -eq 1 ] && echo "> ERROR : Keeping fans on auto as safety measure"
-        "${ipmifanctl[@]}" 0x01 0x01
+        "${ipmifanctl[@]}" 0x30 0x45 0x01 0x02
         exit $4
     else
         if [[ $FS -gt "100" ]]; then
@@ -184,14 +180,19 @@ function setfanspeed () {
         elif [ "$Logtype" != 0 ]; then
             echo "> $TEMP_Check °C is lower or equal to $TEMP_STEP °C. Switching to manual $FS % control"
         fi
-        "${ipmifanctl[@]}" 0x01 0x00
-        "${ipmifanctl[@]}" 0x02 0xff "$HEX_value"
+        currentmode=$("${ipmifanctl[@]}" 0x30 0x45 0x00 | xargs)
+        if [[ "$currentmode" != "01" ]]; then
+            "${ipmifanctl[@]}" 0x30 0x45 0x01 0x01 # Full
+             sleep .5
+        fi
+        "${ipmifanctl[@]}" 0x30 0x70 0x66 0x01 0x00 "$HEX_value" # CPU zone
+        "${ipmifanctl[@]}" 0x30 0x70 0x66 0x01 0x01 "$HEX_value" # Peripheral zone
         exit $4
      fi
 }
 #Failsafe = Parameter check
 re='^[0-9]+$'
-ren='^[+-]?[0-9]+?$'
+ren='^[+-]?[0-9]*$'
 if [ "$Logloop" != false ] && [ "$Logloop" != true ]; then
         echo "Logloop parameter invalid, must be true or false!"
         setfanspeed XX XX "$E_value" 1
@@ -362,7 +363,7 @@ do
 done
 #Pulling temperature data from IPMI
 if $IPMIDATA_toggle ; then
-    IPMIPULLDATA=$(ipmitool -I lanplus -H $IPMIHOST -U $IPMIUSER -P $IPMIPW -y $IPMIEK sdr type temperature)
+    IPMIPULLDATA=$(ipmitool -I lanplus -H $IPMIHOST -U $IPMIUSER -P $IPMIPW sdr type temperature)
     DATADUMP=$(echo "$IPMIPULLDATA")
     if [ -z "$DATADUMP" ]; then
         echo "No data was pulled from IPMI"
@@ -421,10 +422,10 @@ if $NICPU_toggle ; then
         fi
     done
 else
-    CPUTEMP0=$(echo "$DATADUMP" |grep "$CPUID0" |grep degrees |grep -Po '\d{2}' | tail -1)
-    CPUTEMP1=$(echo "$DATADUMP" |grep "$CPUID1" |grep degrees |grep -Po '\d{2}' | tail -1)
-    CPUTEMP2=$(echo "$DATADUMP" |grep "$CPUID2" |grep degrees |grep -Po '\d{2}' | tail -1)
-    CPUTEMP3=$(echo "$DATADUMP" |grep "$CPUID3" |grep degrees |grep -Po '\d{2}' | tail -1)
+    CPUTEMP0=$(echo "$DATADUMP" |grep "$CPUID0" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
+    CPUTEMP1=$(echo "$DATADUMP" |grep "$CPUID1" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
+    CPUTEMP2=$(echo "$DATADUMP" |grep "$CPUID2" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
+    CPUTEMP3=$(echo "$DATADUMP" |grep "$CPUID3" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
 fi
 #CPU counting
 if [ -z "$CPUTEMP0" ]; then
@@ -516,7 +517,7 @@ if [ $TEMPgov -eq 1 ] || [ $((CPUh-CPUl)) -gt $CPUdelta ]; then
         CPUn=$CPUh
 fi
 #Ambient temperature modifier when CPU temps are available.
-AMBTEMP=$(echo "$DATADUMP" |grep "$AMBIENT_ID" |grep degrees |grep -Po '\d{2}' | tail -1)
+AMBTEMP=$(echo "$DATADUMP" |grep "$AMBIENT_ID" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
 if [ $CPUcount != 0 ]; then
         if [[ ! -z "$AMBTEMP" ]]; then
                 if $Logloop ; then
@@ -547,7 +548,7 @@ if [ $CPUcount != 0 ]; then
     fi
 fi
 #Exhaust temperature modifier when CPU temps are available and Checks for Delta Mode and Ambient mode
-EXHTEMP=$(echo "$DATADUMP" |grep "$EXHAUST_ID" |grep degrees |grep -Po '\d{2}' | tail -1)
+EXHTEMP=$(echo "$DATADUMP" |grep "$EXHAUST_ID" |grep degrees |grep -Eo '[[:digit:]][[:digit:]]' | tail -1)
 if [ $CPUcount != 0 ]; then
         if [[ ! -z "$EXHTEMP" ]]; then
                 if [ "$EXHTEMP" -ge $EXHTEMP_MAX ]; then
